@@ -137,12 +137,24 @@ async def main():
     confirmed = all_results[all_results["分類"] == "60分鐘內已確認"].copy()
     candidates = all_results[all_results["分類"] != "60分鐘內已確認"].copy()
 
+    empty_message = "查無訊息，目前沒有適合的配對"
+    confirmed_output = confirmed if not confirmed.empty else pd.DataFrame(
+        [{"搜尋狀態": empty_message}]
+    )
+    candidates_output = candidates if not candidates.empty else pd.DataFrame(
+        [{"搜尋狀態": empty_message}]
+    )
+
     OUT.mkdir(exist_ok=True)
     all_results.to_csv(OUT / "全部候選商機.csv", index=False, encoding="utf-8-sig")
-    confirmed.to_csv(OUT / "60分鐘內已確認.csv", index=False, encoding="utf-8-sig")
+    confirmed_output.to_csv(OUT / "60分鐘內已確認.csv", index=False, encoding="utf-8-sig")
     with pd.ExcelWriter(OUT / "串串商機雷達.xlsx", engine="openpyxl") as writer:
-        confirmed.to_excel(writer, sheet_name="60分鐘內已確認", index=False)
-        candidates.to_excel(writer, sheet_name="候選商機", index=False)
+        confirmed_output.to_excel(writer, sheet_name="60分鐘內已確認", index=False)
+        candidates_output.to_excel(writer, sheet_name="候選商機", index=False)
+    (OUT / "搜尋結果說明.txt").write_text(
+        empty_message if all_results.empty else f"本次共找到 {len(all_results)} 筆候選資料。",
+        encoding="utf-8",
+    )
 
     summary = {
         "collected_at": now.isoformat(),
@@ -150,6 +162,7 @@ async def main():
         "confirmed_recent_count": len(confirmed),
         "candidate_count": len(candidates),
         "total_count": len(all_results),
+        "display_message": empty_message if all_results.empty else f"本次共找到 {len(all_results)} 筆候選資料。",
         "note": "候選商機來自公開搜尋結果；未顯示可靠時間者不會冒充60分鐘內的新貼文。"
     }
     (OUT / "summary.json").write_text(
