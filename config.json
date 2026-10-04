@@ -1,0 +1,20 @@
+{
+  "location": "Taiwan",
+  "max_age_minutes": 60,
+  "strict_recent_only": true,
+  "platforms": [
+    "threads.net",
+    "facebook.com",
+    "instagram.com",
+    "youtube.com",
+    "tiktok.com"
+  ],
+  "keywords": [
+    "旅遊SIM卡",
+    "出國網卡",
+    "LINE貼圖",
+    "印刷名片",
+    "婦女補助"
+  ],
+  "max_results_per_keyword": 20
+}
