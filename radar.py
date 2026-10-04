@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""串串商機雷達：搜尋公開網頁結果並輸出 CSV / Excel。"""
+"""串串商機雷達：搜尋公開網頁，分開輸出近期確認與候選商機。"""
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import pandas as pd
 from dateutil import parser as date_parser
@@ -16,6 +17,7 @@ from playwright.async_api import async_playwright
 ROOT = Path(__file__).parent
 OUT = ROOT / "output"
 TZ_TAIPEI = timezone(timedelta(hours=8))
+COLUMNS = ["關鍵字","平台","標題","摘要","原始連結","發布時間","距今分鐘","時間判定","分類","蒐集時間"]
 
 RELATIVE_PATTERNS = [
     (re.compile(r"(\d+)\s*(?:分鐘|分|minutes?|mins?)\s*(?:前|ago)?", re.I), "minutes"),
@@ -37,15 +39,30 @@ def extract_time(text: str, now: datetime):
         )
         if candidate:
             normalized = candidate.group(1).replace("年", "-").replace("月", "-").replace("日", "")
-            return date_parser.parse(normalized).replace(tzinfo=TZ_TAIPEI), "absolute"
+            parsed = date_parser.parse(normalized)
+            return parsed.replace(tzinfo=TZ_TAIPEI), "absolute"
     except (ValueError, TypeError):
         pass
     return None, "unknown"
 
 
 def clean_url(url: str) -> str:
+    """盡量還原 Bing 包裝過的真正社群連結。"""
     if not url:
         return ""
+    parsed = urlparse(url)
+    if "bing.com" in parsed.netloc:
+        encoded = parse_qs(parsed.query).get("u", [""])[0]
+        if encoded.startswith("a1"):
+            try:
+                payload = encoded[2:] + "=" * (-len(encoded[2:]) % 4)
+                decoded = base64.urlsafe_b64decode(payload).decode("utf-8")
+                if decoded.startswith("http"):
+                    url = decoded
+            except Exception:
+                pass
+        elif encoded.startswith("http"):
+            url = unquote(encoded)
     return url.split("#")[0]
 
 
@@ -55,7 +72,7 @@ async def search_bing(page, query: str, limit: int):
         wait_until="domcontentloaded",
         timeout=60000,
     )
-    await page.wait_for_timeout(1500)
+    await page.wait_for_timeout(1200)
     results = []
     for item in await page.locator("li.b_algo").all():
         link = item.locator("h2 a")
@@ -69,6 +86,7 @@ async def search_bing(page, query: str, limit: int):
             results.append({"title": title, "url": url, "snippet": snippet})
         if len(results) >= limit:
             break
+    print(f"[SEARCH] {query}: {len(results)} results")
     return results
 
 
@@ -76,7 +94,6 @@ async def main():
     config = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
     now = datetime.now(TZ_TAIPEI)
     max_age = int(config.get("max_age_minutes", 60))
-    strict = bool(config.get("strict_recent_only", True))
     rows = []
 
     async with async_playwright() as pw:
@@ -98,16 +115,9 @@ async def main():
                     host = urlparse(result["url"]).netloc.lower()
                     if platform not in host:
                         continue
-                    published, evidence = extract_time(
-                        f'{result["title"]} {result["snippet"]}', now
-                    )
-                    age_minutes = (
-                        round((now - published).total_seconds() / 60, 1)
-                        if published else None
-                    )
-                    verified_recent = age_minutes is not None and 0 <= age_minutes <= max_age
-                    if strict and not verified_recent:
-                        continue
+                    published, evidence = extract_time(f'{result["title"]} {result["snippet"]}', now)
+                    age_minutes = round((now - published).total_seconds() / 60, 1) if published else None
+                    recent = age_minutes is not None and 0 <= age_minutes <= max_age
                     rows.append({
                         "關鍵字": keyword,
                         "平台": platform,
@@ -117,23 +127,30 @@ async def main():
                         "發布時間": published.isoformat() if published else "",
                         "距今分鐘": age_minutes if age_minutes is not None else "",
                         "時間判定": evidence,
-                        "符合60分鐘": "是" if verified_recent else "未確認",
+                        "分類": "60分鐘內已確認" if recent else "候選商機（時間未確認或超過60分鐘）",
                         "蒐集時間": now.isoformat(),
                     })
-                await page.wait_for_timeout(800)
+                await page.wait_for_timeout(600)
         await browser.close()
 
-    columns = ["關鍵字","平台","標題","摘要","原始連結","發布時間","距今分鐘","時間判定","符合60分鐘","蒐集時間"]
-    frame = pd.DataFrame(rows, columns=columns).drop_duplicates(subset=["原始連結"])
+    all_results = pd.DataFrame(rows, columns=COLUMNS).drop_duplicates(subset=["原始連結"])
+    confirmed = all_results[all_results["分類"] == "60分鐘內已確認"].copy()
+    candidates = all_results[all_results["分類"] != "60分鐘內已確認"].copy()
+
     OUT.mkdir(exist_ok=True)
-    frame.to_csv(OUT / "latest.csv", index=False, encoding="utf-8-sig")
-    frame.to_excel(OUT / "latest.xlsx", index=False)
+    all_results.to_csv(OUT / "全部候選商機.csv", index=False, encoding="utf-8-sig")
+    confirmed.to_csv(OUT / "60分鐘內已確認.csv", index=False, encoding="utf-8-sig")
+    with pd.ExcelWriter(OUT / "串串商機雷達.xlsx", engine="openpyxl") as writer:
+        confirmed.to_excel(writer, sheet_name="60分鐘內已確認", index=False)
+        candidates.to_excel(writer, sheet_name="候選商機", index=False)
+
     summary = {
         "collected_at": now.isoformat(),
-        "strict_recent_only": strict,
         "max_age_minutes": max_age,
-        "result_count": len(frame),
-        "note": "只使用公開搜尋結果；無法確認發布時間的內容在嚴格模式下不收錄。"
+        "confirmed_recent_count": len(confirmed),
+        "candidate_count": len(candidates),
+        "total_count": len(all_results),
+        "note": "候選商機來自公開搜尋結果；未顯示可靠時間者不會冒充60分鐘內的新貼文。"
     }
     (OUT / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
