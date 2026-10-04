@@ -1,0 +1,38 @@
+name: 串串商機雷達
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 下載程式
+        uses: actions/checkout@v4
+
+      - name: 設定 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安裝套件與瀏覽器
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 執行商機雷達
+        run: python radar.py
+
+      - name: 上傳報表
+        uses: actions/upload-artifact@v4
+        with:
+          name: chuanchuan-radar-${{ github.run_number }}
+          path: output/
+          retention-days: 30
